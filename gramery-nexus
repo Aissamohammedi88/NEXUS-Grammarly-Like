@@ -1,0 +1,1665 @@
+#!/usr/bin/env python3
+
+# -*- coding: utf-8 -*-
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# NEXUS GRAMMARLY-LIKE v4.0.0
+
+# Correction orthographique EN DIRECT (à la frappe), façon Grammarly.
+
+# Statut vivant, résultats affichés dans le terminal ET sur localhost.
+
+# Auteur : Aissa Mohammedi (DGK)
+
+# Licence : NEXUS-OPEN-2.0
+
+# Compatible a-Shell iOS - os.path uniquement - stdlib pure
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+import os
+
+import re
+
+import sys
+
+import json
+
+import time
+
+import ssl
+
+import gzip
+
+import socket
+
+import hashlib
+
+import datetime
+
+import threading
+
+import urllib.parse
+
+import urllib.request
+
+import urllib.error
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from socketserver import ThreadingMixIn
+
+
+
+VERSION = "4.0.0"
+
+AUTEUR = "Aissa Mohammedi (DGK)"
+
+LICENCE = "NEXUS-OPEN-2.0"
+
+
+
+HOME = os.path.expanduser("~")
+
+BASE = os.path.join(HOME, "Documents", "nexus_grammarly_live")
+
+LOGS_DIR = os.path.join(BASE, "logs")
+
+RESULTS = os.path.join(BASE, "results")
+
+CONFIG_FILE = os.path.join(BASE, "config.json")
+
+
+
+for d in (BASE, LOGS_DIR, RESULTS):
+
+    os.makedirs(d, exist_ok=True)
+
+
+
+LOG_FILE = os.path.join(LOGS_DIR, "grammarly.log")
+
+HISTORY_FILE = os.path.join(RESULTS, "history.jsonl")
+
+
+
+HOST = "127.0.0.1"
+
+PORT = 8914
+
+
+
+CTX = ssl.create_default_context()
+
+CTX.check_hostname = False
+
+CTX.verify_mode = ssl.CERT_NONE
+
+
+
+LOG_LOCK = threading.RLock()
+
+
+
+# Etat global du service (pour le statut vivant)
+
+ETAT = {
+
+    "dernier_ping": 0,
+
+    "lt_ok": False,
+
+    "lt_ms": 0,
+
+    "lt_endpoint": "",
+
+    "derniere_correction": 0,
+
+    "dernier_nb": 0,
+
+    "derniere_langue": "fr",
+
+    "erreurs_total": 0,
+
+    "corrections_total": 0,
+
+    "dernier_texte": "",
+
+    "derniere_raison": "",
+
+}
+
+ETAT_LOCK = threading.RLock()
+
+
+
+
+
+DEFAUT = {
+
+    "languagetool_url": "https://api.languagetool.org/v2/check",
+
+    "langue_defaut": "fr",
+
+    "debounce_ms": 900,
+
+    "min_chars": 4,
+
+    "afficher_terminal": True,
+
+}
+
+
+
+
+
+def charger_config():
+
+    cfg = dict(DEFAUT)
+
+    if os.path.exists(CONFIG_FILE):
+
+        try:
+
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+
+                cfg.update(json.load(f))
+
+        except Exception:
+
+            pass
+
+    return cfg
+
+
+
+
+
+def sauver_config(cfg):
+
+    try:
+
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+    except OSError:
+
+        pass
+
+
+
+
+
+CONFIG = charger_config()
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# LOG TERMINAL — coloré si possible
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+def _c(code):
+
+    if os.environ.get("NO_COLOR"):
+
+        return ""
+
+    if not sys.stdout.isatty():
+
+        return ""
+
+    return code
+
+
+
+
+
+G = _c("\033[0;32m")   # vert
+
+Y = _c("\033[1;33m")   # jaune
+
+R = _c("\033[0;31m")   # rouge
+
+B = _c("\033[0;36m")   # cyan
+
+D = _c("\033[0;90m")   # gris
+
+N = _c("\033[0m")      # reset
+
+
+
+
+
+def log(msg, couleur=""):
+
+    ts = time.strftime("%H:%M:%S")
+
+    ligne = "[{}] {}{}{}".format(ts, couleur, msg, N if couleur else "")
+
+    try:
+
+        print(ligne, flush=True)
+
+    except Exception:
+
+        pass
+
+    with LOG_LOCK:
+
+        try:
+
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+
+                f.write("[{}] {}\n".format(
+
+                    time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+
+        except OSError:
+
+            pass
+
+
+
+
+
+def log_correction(texte, corrections):
+
+    """Affiche joliment une correction dans le terminal."""
+
+    if not CONFIG.get("afficher_terminal", True):
+
+        return
+
+    n = len(corrections)
+
+    if n == 0:
+
+        log("OK  aucune erreur  « " + texte[:60] + " »", G)
+
+        return
+
+    log("{} correction(s) sur {} caractere(s)".format(n, len(texte)), Y)
+
+    for i, c in enumerate(corrections[:12], 1):
+
+        mot = c.get("mot", "")
+
+        titre = c.get("titre", "")
+
+        sugg = c.get("suggestions", [])
+
+        s = (" -> " + " | ".join(sugg[:3])) if sugg else ""
+
+        log("  #{} {}{}{} {}{}{}".format(
+
+            i, R, mot, N, D + titre[:80], s, N), "")
+
+    if n > 12:
+
+        log("  ... et {} autres".format(n - 12), D)
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# HTTP
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+UA = "NexusGrammarlyLive/4.0 (a-Shell)"
+
+
+
+
+
+def http_post(url, data_bytes=None, headers=None, timeout=20):
+
+    h = {
+
+        "User-Agent": UA,
+
+        "Accept": "application/json",
+
+        "Accept-Encoding": "gzip",
+
+    }
+
+    if headers:
+
+        h.update(headers)
+
+    try:
+
+        req = urllib.request.Request(url, data=data_bytes, headers=h, method="POST")
+
+        t0 = time.time()
+
+        with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
+
+            raw = r.read(2_000_000)
+
+            if "gzip" in (r.headers.get("Content-Encoding", "") or "").lower():
+
+                try:
+
+                    raw = gzip.decompress(raw)
+
+                except Exception:
+
+                    pass
+
+            return {
+
+                "ok": True, "status": r.status,
+
+                "body": raw.decode("utf-8", "ignore"),
+
+                "ms": round((time.time() - t0) * 1000),
+
+            }
+
+    except urllib.error.HTTPError as e:
+
+        try:
+
+            body = e.read(500_000).decode("utf-8", "ignore")
+
+        except Exception:
+
+            body = ""
+
+        return {"ok": False, "status": e.code, "body": body,
+
+                "err": "HTTP " + str(e.code)}
+
+    except Exception as e:
+
+        return {"ok": False, "status": 0, "body": "", "err": str(e)[:150]}
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# LANGUAGE TOOL — correction
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+def lt_ping():
+
+    """Petit ping pour le statut vivant."""
+
+    payload = urllib.parse.urlencode({"text": "test", "language": "en-US"}).encode()
+
+    r = http_post(CONFIG["languagetool_url"], payload,
+
+                  headers={"Content-Type": "application/x-www-form-urlencoded"},
+
+                  timeout=8)
+
+    with ETAT_LOCK:
+
+        ETAT["dernier_ping"] = time.time()
+
+        ETAT["lt_ok"] = bool(r.get("ok"))
+
+        ETAT["lt_ms"] = r.get("ms", 0)
+
+        ETAT["lt_endpoint"] = CONFIG["languagetool_url"]
+
+    return r.get("ok", False)
+
+
+
+
+
+def corriger_languagetool(texte, langue="fr"):
+
+    payload = urllib.parse.urlencode({
+
+        "text": texte,
+
+        "language": langue,
+
+    }).encode("utf-8")
+
+
+
+    r = http_post(CONFIG["languagetool_url"], payload,
+
+                  headers={"Content-Type": "application/x-www-form-urlencoded"})
+
+
+
+    if not r.get("ok"):
+
+        with ETAT_LOCK:
+
+            ETAT["erreurs_total"] += 1
+
+            ETAT["derniere_raison"] = r.get("err", "?")[:100]
+
+        return {"ok": False, "err": r.get("err", "?"),
+
+                "backend": "languagetool", "temps_ms": r.get("ms", 0)}
+
+
+
+    try:
+
+        data = json.loads(r["body"])
+
+    except Exception as e:
+
+        return {"ok": False, "err": "parse : " + str(e)[:150],
+
+                "backend": "languagetool"}
+
+
+
+    matches = data.get("matches", [])
+
+    corrections = []
+
+    for m in matches:
+
+        reps = m.get("replacements", [])
+
+        suggestions = [x.get("value", "") for x in reps][:6]
+
+        offset = m.get("offset", 0)
+
+        length = m.get("length", 0)
+
+        mot = ""
+
+        try:
+
+            mot = texte[offset:offset + length]
+
+        except Exception:
+
+            pass
+
+        corrections.append({
+
+            "point": (m.get("rule") or {}).get("id", "?"),
+
+            "titre": m.get("message", ""),
+
+            "explication": (m.get("rule") or {}).get("description", "")[:200],
+
+            "mot": mot,
+
+            "offset": offset,
+
+            "longueur": length,
+
+            "suggestions": suggestions,
+
+            "categorie": ((m.get("rule") or {}).get("category") or {}).get("name", "?"),
+
+        })
+
+
+
+    # Texte corrigé (1ere suggestion partout)
+
+    texte_corrige = texte
+
+    ops = [(c["offset"], c["longueur"], c["suggestions"][0])
+
+           for c in corrections if c.get("suggestions")]
+
+    ops.sort(key=lambda x: x[0], reverse=True)
+
+    for off, ln, remp in ops:
+
+        try:
+
+            texte_corrige = texte_corrige[:off] + remp + texte_corrige[off + ln:]
+
+        except Exception:
+
+            continue
+
+
+
+    with ETAT_LOCK:
+
+        ETAT["derniere_correction"] = time.time()
+
+        ETAT["dernier_nb"] = len(corrections)
+
+        ETAT["derniere_langue"] = langue
+
+        ETAT["corrections_total"] += 1
+
+        ETAT["dernier_texte"] = texte[:200]
+
+        ETAT["derniere_raison"] = "ok"
+
+
+
+    return {
+
+        "ok": True,
+
+        "backend": "languagetool",
+
+        "endpoint": CONFIG["languagetool_url"],
+
+        "texte_original": texte,
+
+        "texte_corrige": texte_corrige,
+
+        "nb_corrections": len(corrections),
+
+        "corrections": corrections,
+
+        "temps_ms": r.get("ms", 0),
+
+    }
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# THREAD DE FOND — ping toutes les 30s
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+def boucle_ping():
+
+    time.sleep(2)
+
+    while True:
+
+        try:
+
+            ok = lt_ping()
+
+            with ETAT_LOCK:
+
+                if ok:
+
+                    log("STATUT LanguageTool OK ({} ms)".format(ETAT["lt_ms"]), G)
+
+                else:
+
+                    log("STATUT LanguageTool KO : " + ETAT.get("derniere_raison", "?"), R)
+
+        except Exception as e:
+
+            log("ping err " + str(e)[:100], R)
+
+        time.sleep(30)
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# HISTORIQUE
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+def historique_add(entry):
+
+    entry["ts"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    try:
+
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+    except OSError:
+
+        pass
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# HTML — correction à la frappe + statut vivant
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+HTML = r"""<!DOCTYPE html>
+
+<html lang="fr"><head><meta charset="utf-8">
+
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<meta name="theme-color" content="#000">
+
+<title>NEXUS GRAMMARLY-LIKE v__V__</title>
+
+<style>
+
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+
+body{background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;
+
+min-height:100vh;
+
+background-image:
+
+  radial-gradient(ellipse at 15% 15%, rgba(0,212,255,0.12) 0%, transparent 50%),
+
+  radial-gradient(ellipse at 85% 85%, rgba(168,85,247,0.12) 0%, transparent 50%)}
+
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 80px}
+
+h1{text-align:center;font-size:34px;font-weight:800;letter-spacing:-2px;margin:16px 0 4px;
+
+background:linear-gradient(90deg,#fff,#00d4ff,#a855f7,#ff6ec7);
+
+-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+.sub{text-align:center;color:#666;font-size:10px;letter-spacing:3px;
+
+text-transform:uppercase;margin-bottom:16px}
+
+
+
+/* Statut vivant en haut */
+
+.status-bar{display:flex;gap:10px;justify-content:center;margin-bottom:16px;flex-wrap:wrap}
+
+.status{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:20px;
+
+background:rgba(20,20,30,0.7);border:1px solid rgba(255,255,255,0.1);
+
+font-family:monospace;font-size:11px;transition:all 0.3s}
+
+.status .dot{width:10px;height:10px;border-radius:50%;display:inline-block;
+
+transition:all 0.3s}
+
+.status.ok{border-color:rgba(74,222,128,0.4);color:#4ade80}
+
+.status.ok .dot{background:#4ade80;box-shadow:0 0 12px #4ade80}
+
+.status.ko{border-color:rgba(248,113,113,0.4);color:#f87171}
+
+.status.ko .dot{background:#f87171;box-shadow:0 0 12px #f87171}
+
+.status.warn{border-color:rgba(251,191,36,0.4);color:#fbbf24}
+
+.status.warn .dot{background:#fbbf24;box-shadow:0 0 12px #fbbf24}
+
+
+
+.card{background:rgba(20,20,30,0.7);border:1px solid rgba(255,255,255,0.08);
+
+border-radius:14px;padding:16px;margin-bottom:12px}
+
+.card h3{color:#00d4ff;font-size:12px;letter-spacing:2px;margin-bottom:10px;text-transform:uppercase}
+
+
+
+textarea,input,select{font-family:inherit;font-size:14px;padding:12px 14px;border-radius:8px;
+
+border:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.4);color:#fff;
+
+outline:none;width:100%;margin-bottom:8px;line-height:1.6}
+
+textarea{min-height:160px;resize:vertical;font-family:Menlo,Consolas,monospace;font-size:13px}
+
+textarea:focus,input:focus,select:focus{border-color:#00d4ff}
+
+
+
+.editor-wrap{position:relative}
+
+.editor-wrap textarea{position:relative;z-index:2;background:transparent}
+
+.editor-wrap .highlight{position:absolute;inset:0;z-index:1;pointer-events:none;
+
+padding:12px 14px;font-family:Menlo,Consolas,monospace;font-size:13px;
+
+line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#fff;
+
+border:1px solid transparent;border-radius:8px;overflow:hidden;margin-bottom:8px}
+
+.editor-wrap .highlight mark{background:rgba(248,113,113,0.25);
+
+border-bottom:2px solid #f87171;border-radius:2px}
+
+
+
+.mot-fautif{background:rgba(248,113,113,0.15);border-bottom:2px wavy #f87171;
+
+cursor:pointer}
+
+
+
+.erreurs-list{max-height:400px;overflow-y:auto;margin-top:10px}
+
+.erreur{background:rgba(248,113,113,0.08);border-left:3px solid #f87171;
+
+border-radius:6px;padding:10px 12px;margin-bottom:6px;font-size:12px;
+
+transition:all 0.2s}
+
+.erreur.actif{background:rgba(248,113,113,0.2);border-left-color:#fff}
+
+.erreur b{color:#f87171;font-family:monospace}
+
+.erreur .titre{color:#fff;margin:4px 0}
+
+.erreur .sugg{color:#4ade80;font-family:monospace;font-size:11px;margin-top:4px}
+
+.erreur .cat{display:inline-block;padding:1px 6px;border-radius:8px;font-size:9px;
+
+background:rgba(251,191,36,0.15);color:#fbbf24;margin-left:6px;
+
+text-transform:uppercase;letter-spacing:1px}
+
+
+
+.stats{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;font-family:monospace;font-size:11px;color:#888}
+
+.stats b{color:#00d4ff;font-weight:600}
+
+
+
+.corrige-box{background:rgba(74,222,128,0.08);border-left:3px solid #4ade80;
+
+border-radius:6px;padding:12px;font-family:Menlo,monospace;font-size:13px;
+
+white-space:pre-wrap;word-break:break-word;color:#a5f3fc;margin-top:12px;display:none}
+
+.corrige-box.on{display:block}
+
+.corrige-box .label{color:#4ade80;font-size:10px;letter-spacing:2px;
+
+text-transform:uppercase;margin-bottom:6px;font-family:inherit}
+
+
+
+.empty{text-align:center;padding:20px;color:#555;font-size:13px}
+
+.pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;
+
+font-family:monospace;background:rgba(0,212,255,0.15);color:#00d4ff;margin-right:4px}
+
+.pill.g{background:rgba(74,222,128,0.15);color:#4ade80}
+
+.pill.r{background:rgba(248,113,113,0.15);color:#f87171}
+
+.pill.y{background:rgba(251,191,36,0.15);color:#fbbf24}
+
+.pill.p{background:rgba(168,85,247,0.15);color:#a855f7}
+
+.row{display:flex;justify-content:space-between;padding:6px 0;font-size:12px;
+
+font-family:monospace;border-bottom:1px solid rgba(255,255,255,0.05)}
+
+.row:last-child{border:none}
+
+
+
+.loader{display:inline-block;width:10px;height:10px;border:2px solid #00d4ff;
+
+border-top-color:transparent;border-radius:50%;animation:sp 0.7s linear infinite;
+
+vertical-align:middle;margin-right:6px}
+
+@keyframes sp{to{transform:rotate(360deg)}}
+
+</style></head><body>
+
+<div class="wrap">
+
+  <h1>GRAMMARLY-LIKE</h1>
+
+  <p class="sub">Correction à la frappe · v__V__ · Terminal + Web</p>
+
+
+
+  <div class="status-bar">
+
+    <div class="status" id="st-lt"><span class="dot"></span><span id="st-lt-txt">LanguageTool : ...</span></div>
+
+    <div class="status" id="st-last"><span class="dot"></span><span id="st-last-txt">Dernière : -</span></div>
+
+    <div class="status" id="st-count"><span class="dot"></span><span id="st-count-txt">Corrections : 0</span></div>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <h3>Ecris ton texte (correction en direct)</h3>
+
+    <div class="editor-wrap">
+
+      <textarea id="texte" placeholder="Tape ici... la correction s applique toute seule apres 1 seconde de pause." autofocus></textarea>
+
+    </div>
+
+    <div class="stats">
+
+      <span id="stats-txt">En attente de frappe...</span>
+
+    </div>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <h3>Erreurs detectees (<span id="nb-err">0</span>)</h3>
+
+    <div class="erreurs-list" id="erreurs"><div class="empty">Aucune erreur detectee pour le moment.</div></div>
+
+  </div>
+
+
+
+  <div class="corrige-box" id="corrige-box">
+
+    <div class="label">Texte corrige</div>
+
+    <div id="corrige"></div>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <h3>Statut detaille</h3>
+
+    <div id="sys" class="empty">Chargement...</div>
+
+  </div>
+
+</div>
+
+
+
+<script>
+
+var debounceTimer = null;
+
+var DEBOUNCE_MS = 900;
+
+var MIN_CHARS = 3;
+
+var derniereRequeteId = 0;
+
+
+
+function esc(t){
+
+  var d = document.createElement('div');
+
+  d.textContent = (t === null || t === undefined) ? '' : String(t);
+
+  return d.innerHTML;
+
+}
+
+
+
+async function api_get(url){
+
+  try { var r = await fetch(url); return await r.json(); }
+
+  catch(e) { return {ok:false, err:'reseau : ' + e.message}; }
+
+}
+
+async function api_post(url, body){
+
+  try {
+
+    var r = await fetch(url, {
+
+      method: 'POST',
+
+      headers: {'Content-Type': 'application/json'},
+
+      body: JSON.stringify(body || {})
+
+    });
+
+    return await r.json();
+
+  } catch(e) {
+
+    return {ok:false, err:'reseau : ' + e.message};
+
+  }
+
+}
+
+
+
+// ─── Correction en direct ─────────────────────────────────────────────
+
+function onInput(){
+
+  var texte = document.getElementById('texte').value;
+
+  document.getElementById('stats-txt').innerHTML =
+
+    '<span class="loader"></span>Frappe detectee... correction dans 1s';
+
+
+
+  if (debounceTimer) clearTimeout(debounceTimer);
+
+
+
+  if (texte.trim().length < MIN_CHARS){
+
+    document.getElementById('stats-txt').textContent = 'En attente (min ' + MIN_CHARS + ' caracteres)...';
+
+    return;
+
+  }
+
+
+
+  debounceTimer = setTimeout(function(){ lancerCorrection(texte); }, DEBOUNCE_MS);
+
+}
+
+
+
+async function lancerCorrection(texte){
+
+  var id = ++derniereRequeteId;
+
+  document.getElementById('stats-txt').innerHTML =
+
+    '<span class="loader"></span>Analyse en cours...';
+
+
+
+  var langue = document.getElementById('langue') ? document.getElementById('langue').value : 'fr';
+
+  var r = await api_post('/api/corriger', {
+
+    texte: texte,
+
+    langue: langue,
+
+    auto: true
+
+  });
+
+
+
+  // Anti-rebond : si une reponse plus recente est arrivee, on jette celle-ci
+
+  if (id !== derniereRequeteId) return;
+
+
+
+  if (!r.ok){
+
+    document.getElementById('stats-txt').innerHTML =
+
+      '<span class="pill r">ERREUR</span> ' + esc(r.err || '?');
+
+    return;
+
+  }
+
+
+
+  document.getElementById('stats-txt').innerHTML =
+
+    '<span class="pill g">' + r.nb_corrections + ' erreurs</span>' +
+
+    '<span class="pill">' + esc(r.backend || '?') + '</span>' +
+
+    (r.temps_ms ? '<span class="pill y">' + r.temps_ms + ' ms</span>' : '') +
+
+    '<span class="pill p">auto</span>';
+
+
+
+  document.getElementById('nb-err').textContent = r.nb_corrections;
+
+
+
+  var el = document.getElementById('erreurs');
+
+  if (r.nb_corrections === 0){
+
+    el.innerHTML = '<div class="empty">Aucune erreur detectee.</div>';
+
+  } else {
+
+    el.innerHTML = r.corrections.map(function(c, i){
+
+      var mot = c.mot ? '<b>' + esc(c.mot) + '</b>' : '<b>#' + (i+1) + '</b>';
+
+      var cat = c.categorie ? '<span class="cat">' + esc(c.categorie) + '</span>' : '';
+
+      var sugg = (c.suggestions && c.suggestions.length)
+
+        ? '<div class="sugg">=> ' + c.suggestions.map(esc).join(' | ') + '</div>'
+
+        : '';
+
+      return '<div class="erreur">' + mot + cat +
+
+        '<div class="titre">' + esc(c.titre || '') + '</div>' +
+
+        (c.explication ? '<div style="color:#888;font-size:11px">' + esc(c.explication) + '</div>' : '') +
+
+        sugg + '</div>';
+
+    }).join('');
+
+  }
+
+
+
+  // Texte corrige
+
+  if (r.texte_corrige && r.texte_corrige !== r.texte_original){
+
+    document.getElementById('corrige').textContent = r.texte_corrige;
+
+    document.getElementById('corrige-box').classList.add('on');
+
+  } else {
+
+    document.getElementById('corrige-box').classList.remove('on');
+
+  }
+
+}
+
+
+
+// ─── Statut vivant ─────────────────────────────────────────────────────
+
+async function majStatut(){
+
+  var s = await api_get('/api/etat');
+
+  if (!s || !s.ok) return;
+
+  var e = s.etat;
+
+
+
+  // LanguageTool
+
+  var el = document.getElementById('st-lt');
+
+  var txt = document.getElementById('st-lt-txt');
+
+  el.className = 'status ' + (e.lt_ok ? 'ok' : 'ko');
+
+  txt.textContent = 'LanguageTool : ' + (e.lt_ok ? 'OK' : 'KO') +
+
+                    ' (' + (e.lt_ms || 0) + ' ms)';
+
+
+
+  // Derniere correction
+
+  var el2 = document.getElementById('st-last');
+
+  var txt2 = document.getElementById('st-last-txt');
+
+  if (e.derniere_correction > 0){
+
+    var age = Math.floor(Date.now()/1000 - e.derniere_correction);
+
+    el2.className = 'status ok';
+
+    txt2.textContent = 'Dernière : il y a ' + age + 's (' + e.dernier_nb + ' err.)';
+
+  } else {
+
+    el2.className = 'status warn';
+
+    txt2.textContent = 'Dernière : aucune';
+
+  }
+
+
+
+  // Total
+
+  var el3 = document.getElementById('st-count');
+
+  var txt3 = document.getElementById('st-count-txt');
+
+  el3.className = 'status ' + (e.corrections_total > 0 ? 'ok' : 'warn');
+
+  txt3.textContent = 'Corrections : ' + e.corrections_total + ' (' + e.erreurs_total + ' err. réseau)';
+
+
+
+  // Detail systeme
+
+  var sys = document.getElementById('sys');
+
+  var keys = Object.keys(e);
+
+  sys.innerHTML = keys.map(function(k){
+
+    var v = e[k];
+
+    if (typeof v === 'number' && (k.indexOf('_time') >= 0 || k === 'dernier_ping' || k === 'derniere_correction')){
+
+      if (v > 0) v = new Date(v*1000).toLocaleTimeString();
+
+      else v = '-';
+
+    }
+
+    return '<div class="row"><span>' + esc(k) + '</span><span>' + esc(v) + '</span></div>';
+
+  }).join('');
+
+}
+
+
+
+document.getElementById('texte').addEventListener('input', onInput);
+
+
+
+majStatut();
+
+setInterval(majStatut, 3000);
+
+
+
+// Petit rappel au demarrage
+
+setTimeout(function(){
+
+  document.getElementById('texte').focus();
+
+}, 200);
+
+</script>
+
+</body></html>
+
+"""
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# HANDLER
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+class Handler(BaseHTTPRequestHandler):
+
+    server_version = "NexusGrammarlyLive/" + VERSION
+
+    protocol_version = "HTTP/1.1"
+
+
+
+    def log_message(self, *a):
+
+        pass
+
+
+
+    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+
+        if isinstance(body, str):
+
+            body = body.encode("utf-8")
+
+        try:
+
+            self.send_response(code)
+
+            self.send_header("Content-Type", ctype)
+
+            self.send_header("Content-Length", str(len(body)))
+
+            self.send_header("Access-Control-Allow-Origin", "*")
+
+            self.end_headers()
+
+            self.wfile.write(body)
+
+        except (BrokenPipeError, ConnectionResetError):
+
+            pass
+
+
+
+    def _json(self, code, obj):
+
+        self._send(code, json.dumps(obj, indent=2, ensure_ascii=False, default=str))
+
+
+
+    def _html(self, code, text):
+
+        self._send(code, text, "text/html; charset=utf-8")
+
+
+
+    def _body_json(self):
+
+        try:
+
+            length = int(self.headers.get("Content-Length", "0") or "0")
+
+        except Exception:
+
+            length = 0
+
+        if length <= 0 or length > 2_000_000:
+
+            return {}
+
+        try:
+
+            raw = self.rfile.read(length)
+
+            return json.loads(raw.decode("utf-8", "ignore") or "{}")
+
+        except Exception:
+
+            return {}
+
+
+
+    def _parse(self):
+
+        p = urllib.parse.urlparse(self.path)
+
+        return p.path, urllib.parse.parse_qs(p.query)
+
+
+
+    def do_GET(self):
+
+        path, qs = self._parse()
+
+        try:
+
+            if path in ("/", "/index.html"):
+
+                return self._html(200, HTML.replace("__V__", VERSION))
+
+
+
+            if path == "/api/etat":
+
+                with ETAT_LOCK:
+
+                    snapshot = dict(ETAT)
+
+                return self._json(200, {"ok": True, "etat": snapshot})
+
+
+
+            if path == "/api/status":
+
+                return self._json(200, {
+
+                    "ok": True, "version": VERSION, "auteur": AUTEUR,
+
+                    "host": HOST, "port": PORT,
+
+                    "languagetool_url": CONFIG["languagetool_url"],
+
+                    "log": LOG_FILE,
+
+                })
+
+
+
+            if path == "/api/ping":
+
+                return self._json(200, {"ok": True, "ping": "pong"})
+
+
+
+            return self._json(404, {"ok": False, "err": "route inconnue"})
+
+        except Exception as e:
+
+            log("GET err " + str(e)[:150], R)
+
+            return self._json(500, {"ok": False, "err": str(e)[:200]})
+
+
+
+    def do_POST(self):
+
+        path, qs = self._parse()
+
+
+
+        try:
+
+            if path == "/api/corriger":
+
+                data = self._body_json()
+
+                texte = data.get("texte", "")
+
+                langue = data.get("langue", CONFIG.get("langue_defaut", "fr"))
+
+                auto = bool(data.get("auto", False))
+
+
+
+                if not texte or not texte.strip():
+
+                    return self._json(400, {"ok": False, "err": "texte vide"})
+
+
+
+                r = corriger_languagetool(texte, langue)
+
+
+
+                if r.get("ok"):
+
+                    log_correction(texte, r.get("corrections", []))
+
+                    historique_add({
+
+                        "texte": texte[:200],
+
+                        "nb_corrections": r.get("nb_corrections", 0),
+
+                        "langue": langue,
+
+                        "auto": auto,
+
+                    })
+
+
+
+                return self._json(200, r)
+
+
+
+            if path == "/api/config/save":
+
+                data = self._body_json()
+
+                for k in ("languagetool_url", "langue_defaut",
+
+                          "debounce_ms", "min_chars", "afficher_terminal"):
+
+                    if k in data:
+
+                        CONFIG[k] = data[k]
+
+                sauver_config(CONFIG)
+
+                return self._json(200, {"ok": True})
+
+
+
+            return self._json(404, {"ok": False, "err": "route inconnue"})
+
+        except Exception as e:
+
+            log("POST err " + str(e)[:150], R)
+
+            return self._json(500, {"ok": False, "err": str(e)[:200]})
+
+
+
+    def do_OPTIONS(self):
+
+        try:
+
+            self.send_response(204)
+
+            self.send_header("Access-Control-Allow-Origin", "*")
+
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+            self.send_header("Access-Control-Allow-Headers", "*")
+
+            self.send_header("Content-Length", "0")
+
+            self.end_headers()
+
+        except Exception:
+
+            pass
+
+
+
+
+
+class Server(ThreadingMixIn, HTTPServer):
+
+    daemon_threads = True
+
+    allow_reuse_address = True
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+# MAIN
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+
+def port_libre(host, port):
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    try:
+
+        s.settimeout(1)
+
+        s.bind((host, port))
+
+        return True
+
+    except OSError:
+
+        return False
+
+    finally:
+
+        try:
+
+            s.close()
+
+        except Exception:
+
+            pass
+
+
+
+
+
+def trouver_port(host, start, max_tries=30):
+
+    for p in range(start, start + max_tries):
+
+        if port_libre(host, p):
+
+            return p
+
+    return None
+
+
+
+
+
+def main():
+
+    print("")
+
+    print(B + "=" * 78 + N)
+
+    print(B + "  NEXUS GRAMMARLY-LIKE v" + VERSION + N)
+
+    print(B + "  Auteur : " + AUTEUR + "  |  Licence : " + LICENCE + N)
+
+    print(B + "=" * 78 + N)
+
+    print("")
+
+    print("  Correction a la frappe (comme Grammarly).")
+
+    print("  Statut vivant affiche dans ce terminal ET sur la page web.")
+
+    print("")
+
+    print("  LanguageTool : " + CONFIG["languagetool_url"])
+
+    print("")
+
+
+
+    port = PORT
+
+    if not port_libre(HOST, port):
+
+        print("  Port " + str(port) + " occupe, recherche...")
+
+        nouveau = trouver_port(HOST, port + 1)
+
+        if nouveau is None:
+
+            print("  Aucun port libre.")
+
+            return
+
+        port = nouveau
+
+
+
+    print("  Local  : " + B + "http://localhost:" + str(port) + "/" + N)
+
+    print("  Ou     : " + B + "http://127.0.0.1:" + str(port) + "/" + N)
+
+    print("")
+
+    print("  Ouvre la page, tape du texte, les erreurs defilent ici.")
+
+    print("")
+
+    print("  Ctrl+C pour arreter")
+
+    print("")
+
+
+
+    log("=== NEXUS GRAMMARLY-LIKE v" + VERSION + " ===", B)
+
+
+
+    # Ping initial en thread de fond
+
+    threading.Thread(target=boucle_ping, daemon=True).start()
+
+
+
+    try:
+
+        srv = Server((HOST, port), Handler)
+
+    except OSError as e:
+
+        print("  Erreur bind : " + str(e))
+
+        return
+
+
+
+    print(B + "  Serveur pret." + N)
+
+    print("")
+
+    try:
+
+        srv.serve_forever()
+
+    except KeyboardInterrupt:
+
+        print("")
+
+        print("  Arrete.")
+
+        print("")
+
+    finally:
+
+        try:
+
+            srv.server_close()
+
+        except Exception:
+
+            pass
+
+
+
+
+
+if __name__ == "__main__":
+
+    try:
+
+        main()
+
+    except Exception as e:
+
+        print("  ERREUR FATALE : " + str(e))
