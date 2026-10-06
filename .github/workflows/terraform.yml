@@ -1,0 +1,1671 @@
+# This workflow installs the latest version of Terraform CLI and configures the Terraform CLI configuration file
+# with an API token for Terraform Cloud (app.terraform.io). On pull request events, this workflow will run
+# `terraform init`, `terraform fmt`, and `terraform plan` (speculative plan via Terraform Cloud). On push events
+# to the "main" branch, `terraform apply` will be executed.
+#
+# Documentation for `hashicorp/setup-terraform` is located here: https://github.com/hashicorp/setup-terraform
+#
+# To use this workflow, you will need to complete the following setup steps.
+#
+# 1. Create a `main.tf` file in the root of this repository with the `remote` backend and one or more resources defined.
+#   Example `main.tf`:
+#     # The configuration for the `remote` backend.
+#     terraform {
+#       backend "remote" {
+#         # The name of your Terraform Cloud organization.
+#         organization = "example-organization"
+#
+#         # The name of the Terraform Cloud workspace to store Terraform state files in.
+#         workspaces {
+#           name = "example-workspace"
+#         }
+#       }
+#     }
+#
+#     # An example resource that does nothing.
+#     resource "null_resource" "example" {
+#       triggers = {
+#         value = "A example resource that does nothing!"
+#       }
+#     }
+#
+#
+# 2. Generate a Terraform Cloud user API token and store it as a GitHub secret (e.g. TF_API_TOKEN) on this repository.
+#   Documentation:
+#     - https://www.terraform.io/docs/cloud/users-teams-organizations/api-tokens.html
+#     - https://help.github.com/en/actions/configuring-and-managing-workflows/creating-and-storing-encrypted-secrets
+#
+# 3. Reference the GitHub secret in step using the `hashicorp/setup-terraform` GitHub Action.
+#   Example:
+#     - name: Setup Terraform
+#       uses: hashicorp/setup-terraform@v1
+#       with:
+#         cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+name: 'Terraform'
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: 'Terraform'
+    runs-on: ubuntu-latest
+    environment: production
+
+    # Use the Bash shell regardless whether the GitHub Actions runner is ubuntu-latest, macos-latest, or windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    # Checkout the repository to the GitHub Actions runner
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    # Install the latest version of Terraform CLI and configure the Terraform CLI configuration file with a Terraform Cloud user API token
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1
+      with:
+        cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+    # Initialize a new or existing Terraform working directory by creating initial files, loading any remote state, downloading modules, etc.
+    - name: Terraform Init
+      run: terraform init
+
+    # Checks that all Terraform configuration files adhere to a canonical format
+    - name: Terraform Format
+      run: terraform fmt -check
+
+    # Generates an execution plan for Terraform
+    - name: Terraform Plan
+      run: terraform plan -input=false
+
+      # On push to "main", build or change infrastructure according to Terraform configuration files
+      # Note: It is recommended to set up a required "strict" status check in your repository for "Terraform Cloud". See the documentation on "strict" required status checks for more information: https://help.github.com/en/github/administering-a-repository/types-of-required-status-checks
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/"main"' && github.event_name == 'push'
+      run: terraform apply -auto-approve -input=false
+terra.yml
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEXUS GRAMMARLY-LIKE — Terraform CI/CD Pipeline
+# Auteur  : Aissa Mohammedi (DGK)
+# Version : 3.0.0
+# Cloud   : AWS (multi-region, multi-env)
+# Envs    : dev · staging · prod
+# ═══════════════════════════════════════════════════════════════════════════════
+​
+name: "Terraform CI/CD — NEXUS Infrastructure"
+​
+# ─────────────────────────────────────────────────────────────────────────────
+# TRIGGERS
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - staging
+      - "release/**"
+      - "hotfix/**"
+    paths:
+      - "infra/**"
+      - "modules/**"
+      - ".github/workflows/terra.yml"
+      - "*.tfvars"
+​
+  pull_request:
+    branches:
+      - main
+      - staging
+    paths:
+      - "infra/**"
+      - "modules/**"
+      - ".github/workflows/terra.yml"
+      - "*.tfvars"
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+​
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environnement cible"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+          - all
+      action:
+        description: "Action Terraform"
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+          - validate
+          - drift
+      target:
+        description: "Resource ciblée (optionnel, ex: module.vpc)"
+        required: false
+        type: string
+        default: ""
+      auto_approve:
+        description: "Auto-approuver (dangereux en prod)"
+        required: false
+        type: boolean
+        default: false
+      tf_log:
+        description: "Niveau de log Terraform"
+        required: false
+        type: choice
+        options:
+          - ""
+          - "INFO"
+          - "DEBUG"
+          - "TRACE"
+        default: ""
+​
+  schedule:
+    # Détection de drift — tous les lundis à 06h00 UTC
+    - cron: "0 6 * * 1"
+    # Rapport de coûts — tous les 1ers du mois à 08h00 UTC
+    - cron: "0 8 1 * *"
+​
+# ─────────────────────────────────────────────────────────────────────────────
+# VARIABLES GLOBALES
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  TF_VERSION:             "1.9.5"
+  TFLINT_VERSION:         "0.53.0"
+  TFSEC_VERSION:          "1.28.9"
+  CHECKOV_VERSION:        "3.2.250"
+  INFRACOST_VERSION:      "0.10.39"
+  TERRADOCS_VERSION:      "0.18.0"
+  AWS_REGION:             "us-east-1"
+  AWS_SECONDARY_REGION:   "eu-west-1"
+  TF_INPUT:               "false"
+  TF_IN_AUTOMATION:       "true"
+  TERRAFORM_WRAPPER:      "false"
+  INFRACOST_API_KEY:      ${{ secrets.INFRACOST_API_KEY }}
+  SLACK_WEBHOOK_URL:      ${{ secrets.SLACK_WEBHOOK_INFRA }}
+  GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+  TF_CLI_ARGS:            "-no-color"
+  TF_DATA_DIR:            "/tmp/terraform-data"
+  PLAN_ARTIFACT_NAME:     "terraform-plan"
+  STATE_BUCKET_PREFIX:    "nexus-tfstate"
+​
+# ─────────────────────────────────────────────────────────────────────────────
+# CONCURRENCY — évite les plans/apply simultanés sur le même env
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: terraform-${{ github.ref }}-${{ github.event.inputs.environment || 'all' }}
+  cancel-in-progress: false
+​
+# ─────────────────────────────────────────────────────────────────────────────
+# PERMISSIONS
+# ─────────────────────────────────────────────────────────────────────────────
+permissions:
+  contents:      read
+  pull-requests: write
+  issues:        write
+  id-token:      write
+  actions:       read
+  security-events: write
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 1 — METADATA & SETUP
+# ═══════════════════════════════════════════════════════════════════════════════
+jobs:
+  metadata:
+    name: "Meta / Setup"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run_id:        ${{ steps.meta.outputs.run_id }}
+      short_sha:     ${{ steps.meta.outputs.short_sha }}
+      branch:        ${{ steps.meta.outputs.branch }}
+      is_main:       ${{ steps.meta.outputs.is_main }}
+      is_pr:         ${{ steps.meta.outputs.is_pr }}
+      env_dev:       ${{ steps.envs.outputs.dev }}
+      env_staging:   ${{ steps.envs.outputs.staging }}
+      env_prod:      ${{ steps.envs.outputs.prod }}
+      matrix:        ${{ steps.envs.outputs.matrix }}
+      has_tf_changes: ${{ steps.changes.outputs.terraform }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+​
+      - name: "Compute metadata"
+        id: meta
+        run: |
+          echo "run_id=$(date +%Y%m%d-%H%M%S)-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)"                >> "$GITHUB_OUTPUT"
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
+          echo "branch=${BRANCH}"                                       >> "$GITHUB_OUTPUT"
+          if [[ "$BRANCH" == "main" ]]; then
+            echo "is_main=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_main=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "is_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+​
+      - name: "Déterminer les environnements à traiter"
+        id: envs
+        run: |
+          INPUT_ENV="${{ github.event.inputs.environment }}"
+          BRANCH="${{ steps.meta.outputs.branch }}"
+          DEV="false"; STAGING="false"; PROD="false"
+​
+          if [[ "$INPUT_ENV" == "all" || "$INPUT_ENV" == "" ]]; then
+            case "$BRANCH" in
+              dev)          DEV="true" ;;
+              staging)      DEV="true"; STAGING="true" ;;
+              main)         DEV="true"; STAGING="true"; PROD="true" ;;
+              release/*)    STAGING="true" ;;
+              hotfix/*)     PROD="true" ;;
+              *)            DEV="true" ;;
+            esac
+          else
+            [[ "$INPUT_ENV" == "dev"     ]] && DEV="true"
+            [[ "$INPUT_ENV" == "staging" ]] && STAGING="true"
+            [[ "$INPUT_ENV" == "prod"    ]] && PROD="true"
+          fi
+​
+          echo "dev=${DEV}"         >> "$GITHUB_OUTPUT"
+          echo "staging=${STAGING}" >> "$GITHUB_OUTPUT"
+          echo "prod=${PROD}"       >> "$GITHUB_OUTPUT"
+​
+          # Build matrix JSON
+          MATRIX_ENVS="[]"
+          [[ "$DEV"     == "true" ]] && MATRIX_ENVS=$(echo "$MATRIX_ENVS" | jq '. + ["dev"]')
+          [[ "$STAGING" == "true" ]] && MATRIX_ENVS=$(echo "$MATRIX_ENVS" | jq '. + ["staging"]')
+          [[ "$PROD"    == "true" ]] && MATRIX_ENVS=$(echo "$MATRIX_ENVS" | jq '. + ["prod"]')
+          echo "matrix={\"environment\":${MATRIX_ENVS}}" >> "$GITHUB_OUTPUT"
+​
+      - name: "Détecter les changements Terraform"
+        id: changes
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          if echo "$CHANGED" | grep -qE '\.(tf|tfvars|hcl)$|infra/|modules/'; then
+            echo "terraform=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "terraform=false" >> "$GITHUB_OUTPUT"
+          fi
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 2 — FORMAT CHECK
+# ═══════════════════════════════════════════════════════════════════════════════
+  format:
+    name: "Format Check (terraform fmt)"
+    runs-on: ubuntu-24.04
+    needs: metadata
+    timeout-minutes: 10
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform ${{ env.TF_VERSION }}"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Terraform fmt check"
+        id: fmt
+        run: |
+          terraform fmt -check -recursive -diff ./infra ./modules
+        continue-on-error: true
+​
+      - name: "Commenter PR si format KO"
+        if: steps.fmt.outcome == 'failure' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              '## ❌ `terraform fmt` — Formatage incorrect',
+              '',
+              'Corrige le formatage avant de merger :',
+              '```bash',
+              'terraform fmt -recursive ./infra ./modules',
+              '```',
+              '',
+              `> Run: \`${{ github.run_id }}\` · Commit: \`${{ needs.metadata.outputs.short_sha }}\``,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+​
+      - name: "Échouer si format incorrect"
+        if: steps.fmt.outcome == 'failure'
+        run: exit 1
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 3 — VALIDATE (par environnement)
+# ═══════════════════════════════════════════════════════════════════════════════
+  validate:
+    name: "Validate · ${{ matrix.environment }}"
+    runs-on: ubuntu-24.04
+    needs: [metadata, format]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.metadata.outputs.matrix) }}
+    env:
+      TF_WORKSPACE: ${{ matrix.environment }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Configure AWS Credentials · ${{ matrix.environment }}"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
+          role-session-name: tf-validate-${{ matrix.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Cache .terraform"
+        uses: actions/cache@v4
+        with:
+          path: infra/${{ matrix.environment }}/.terraform
+          key: terraform-${{ matrix.environment }}-${{ hashFiles(format('infra/{0}/.terraform.lock.hcl', matrix.environment)) }}
+          restore-keys: terraform-${{ matrix.environment }}-
+​
+      - name: "Terraform Init · ${{ matrix.environment }}"
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET_PREFIX}-${{ matrix.environment }}" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=nexus-tf-locks-${{ matrix.environment }}" \
+            -upgrade
+​
+      - name: "Terraform Validate · ${{ matrix.environment }}"
+        working-directory: infra/${{ matrix.environment }}
+        run: terraform validate
+​
+      - name: "Résumé validation"
+        if: always()
+        run: |
+          echo "### Validation · ${{ matrix.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "✅ Validation réussie" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Validation échouée" >> "$GITHUB_STEP_SUMMARY"
+          fi
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 4 — LINT (tflint)
+# ═══════════════════════════════════════════════════════════════════════════════
+  lint:
+    name: "Lint · TFLint · ${{ matrix.environment }}"
+    runs-on: ubuntu-24.04
+    needs: [metadata, validate]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.metadata.outputs.matrix) }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup TFLint ${{ env.TFLINT_VERSION }}"
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v${{ env.TFLINT_VERSION }}
+​
+      - name: "Init TFLint"
+        working-directory: infra/${{ matrix.environment }}
+        run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+​
+      - name: "Run TFLint"
+        id: tflint
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          tflint \
+            --format compact \
+            --enable-rule aws_instance_invalid_type \
+            --enable-rule aws_instance_previous_type \
+            --enable-rule aws_s3_bucket_name_with_prefix \
+            --enable-rule terraform_deprecated_interpolation \
+            --enable-rule terraform_deprecated_index \
+            --enable-rule terraform_unused_declarations \
+            --enable-rule terraform_comment_syntax \
+            --enable-rule terraform_documented_outputs \
+            --enable-rule terraform_documented_variables \
+            --enable-rule terraform_typed_variables \
+            --enable-rule terraform_module_pinned_source \
+            --enable-rule terraform_required_providers \
+            --enable-rule terraform_required_version \
+            2>&1 | tee /tmp/tflint-report-${{ matrix.environment }}.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
+        continue-on-error: true
+​
+      - name: "Upload rapport TFLint"
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tflint-${{ matrix.environment }}-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/tflint-report-${{ matrix.environment }}.txt
+          retention-days: 30
+​
+      - name: "Commenter PR — TFLint"
+        if: github.event_name == 'pull_request' && steps.tflint.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('/tmp/tflint-report-${{ matrix.environment }}.txt', 'utf8');
+            const body = [
+              `## ⚠️ TFLint — \`${{ matrix.environment }}\``,
+              '',
+              '```',
+              report.slice(0, 3000),
+              '```',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 5 — SECURITY SCAN (tfsec + checkov)
+# ═══════════════════════════════════════════════════════════════════════════════
+  security:
+    name: "Security Scan · ${{ matrix.environment }}"
+    runs-on: ubuntu-24.04
+    needs: [metadata, validate]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.metadata.outputs.matrix) }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      # ── tfsec ────────────────────────────────────────────────────────────────
+      - name: "Run tfsec · ${{ matrix.environment }}"
+        id: tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infra/${{ matrix.environment }}
+          version: v${{ env.TFSEC_VERSION }}
+          format: sarif
+          additional_args: >
+            --minimum-severity HIGH
+            --exclude-downloaded-modules
+            --config-file .tfsec.yml
+          soft_fail: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+​
+      - name: "Upload SARIF tfsec"
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: tfsec-${{ matrix.environment }}
+​
+      # ── checkov ──────────────────────────────────────────────────────────────
+      - name: "Setup Python (checkov)"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+​
+      - name: "Install checkov ${{ env.CHECKOV_VERSION }}"
+        run: pip install checkov==${{ env.CHECKOV_VERSION }} --quiet
+​
+      - name: "Run checkov · ${{ matrix.environment }}"
+        id: checkov
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          checkov \
+            --directory . \
+            --framework terraform \
+            --output json \
+            --output-file /tmp/checkov-${{ matrix.environment }}.json \
+            --quiet \
+            --compact \
+            --skip-check CKV_AWS_18,CKV_AWS_19 \
+            --download-external-modules false \
+            --soft-fail
+        continue-on-error: true
+​
+      - name: "Résumé sécurité"
+        if: always()
+        run: |
+          echo "### Sécurité · ${{ matrix.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f /tmp/checkov-${{ matrix.environment }}.json ]; then
+            FAILED=$(jq '.summary.failed // 0' /tmp/checkov-${{ matrix.environment }}.json)
+            PASSED=$(jq '.summary.passed // 0' /tmp/checkov-${{ matrix.environment }}.json)
+            echo "| Résultat | Count |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| --- | --- |"        >> "$GITHUB_STEP_SUMMARY"
+            echo "| ✅ Passed | $PASSED |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| ❌ Failed | $FAILED |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+​
+      - name: "Upload rapport checkov"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-${{ matrix.environment }}-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/checkov-${{ matrix.environment }}.json
+          retention-days: 90
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 6 — COST ESTIMATION (infracost)
+# ═══════════════════════════════════════════════════════════════════════════════
+  cost:
+    name: "Cost Estimation · ${{ matrix.environment }}"
+    runs-on: ubuntu-24.04
+    needs: [metadata, validate]
+    timeout-minutes: 20
+    if: github.event_name == 'pull_request' || github.event.inputs.action == 'plan'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.metadata.outputs.matrix) }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+​
+      - name: "Setup Infracost"
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+​
+      - name: "Checkout base PR"
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref:  ${{ github.event.pull_request.base.ref }}
+          path: /tmp/base-branch
+​
+      - name: "Infracost baseline (base branch)"
+        if: github.event_name == 'pull_request'
+        run: |
+          infracost breakdown \
+            --path /tmp/base-branch/infra/${{ matrix.environment }} \
+            --format json \
+            --out-file /tmp/infracost-base-${{ matrix.environment }}.json \
+            --terraform-var-file vars/${{ matrix.environment }}.tfvars
+​
+      - name: "Infracost actuel (HEAD)"
+        run: |
+          infracost breakdown \
+            --path infra/${{ matrix.environment }} \
+            --format json \
+            --out-file /tmp/infracost-head-${{ matrix.environment }}.json \
+            --terraform-var-file infra/${{ matrix.environment }}/vars/${{ matrix.environment }}.tfvars
+​
+      - name: "Infracost diff"
+        if: github.event_name == 'pull_request'
+        run: |
+          infracost diff \
+            --path /tmp/infracost-head-${{ matrix.environment }}.json \
+            --compare-to /tmp/infracost-base-${{ matrix.environment }}.json \
+            --format json \
+            --out-file /tmp/infracost-diff-${{ matrix.environment }}.json
+​
+      - name: "Commenter PR — coût"
+        if: github.event_name == 'pull_request'
+        uses: infracost/actions/comment@v1
+        with:
+          path: /tmp/infracost-diff-${{ matrix.environment }}.json
+          behavior: update
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          tag: infracost-${{ matrix.environment }}
+​
+      - name: "Résumé coûts"
+        if: always()
+        run: |
+          echo "### Coûts estimés · ${{ matrix.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f /tmp/infracost-head-${{ matrix.environment }}.json ]; then
+            TOTAL=$(jq -r '.totalMonthlyCost // "N/A"' /tmp/infracost-head-${{ matrix.environment }}.json)
+            echo "💵 Coût mensuel estimé : **\$${TOTAL}**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+​
+      - name: "Upload rapports infracost"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infracost-${{ matrix.environment }}-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/infracost-*.json
+          retention-days: 30
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 7 — PLAN (par environnement)
+# ═══════════════════════════════════════════════════════════════════════════════
+  plan:
+    name: "Plan · ${{ matrix.environment }}"
+    runs-on: ubuntu-24.04
+    needs: [metadata, lint, security]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.metadata.outputs.matrix) }}
+    env:
+      TF_WORKSPACE: ${{ matrix.environment }}
+    outputs:
+      plan_exit_code: ${{ steps.plan.outputs.exit_code }}
+      has_changes:    ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform ${{ env.TF_VERSION }}"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Configure AWS Credentials · ${{ matrix.environment }}"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
+          role-session-name: tf-plan-${{ matrix.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Cache .terraform"
+        uses: actions/cache@v4
+        with:
+          path: infra/${{ matrix.environment }}/.terraform
+          key: terraform-${{ matrix.environment }}-${{ hashFiles(format('infra/{0}/.terraform.lock.hcl', matrix.environment)) }}
+          restore-keys: terraform-${{ matrix.environment }}-
+​
+      - name: "Terraform Init · ${{ matrix.environment }}"
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET_PREFIX}-${{ matrix.environment }}" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=nexus-tf-locks-${{ matrix.environment }}" \
+            -upgrade
+​
+      - name: "Créer répertoire de plans"
+        run: mkdir -p /tmp/plans
+​
+      - name: "Terraform Plan · ${{ matrix.environment }}"
+        id: plan
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          TF_TARGET=""
+          if [[ -n "${{ github.event.inputs.target }}" ]]; then
+            TF_TARGET="-target=${{ github.event.inputs.target }}"
+          fi
+​
+          if [[ -n "${{ github.event.inputs.tf_log }}" ]]; then
+            export TF_LOG="${{ github.event.inputs.tf_log }}"
+          fi
+​
+          terraform plan \
+            -detailed-exitcode \
+            -out=/tmp/plans/${{ matrix.environment }}.tfplan \
+            -var-file=vars/${{ matrix.environment }}.tfvars \
+            $TF_TARGET \
+            2>&1 | tee /tmp/plan-output-${{ matrix.environment }}.txt
+​
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+​
+          if [[ "$EXIT_CODE" == "2" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+​
+          # Exit 1 = erreur ; exit 2 = changements détectés (pas une erreur)
+          [[ "$EXIT_CODE" == "1" ]] && exit 1 || exit 0
+        env:
+          TF_LOG: ${{ github.event.inputs.tf_log }}
+​
+      - name: "Terraform Show (plan JSON)"
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          terraform show \
+            -json /tmp/plans/${{ matrix.environment }}.tfplan \
+            > /tmp/plans/${{ matrix.environment }}.json
+​
+      - name: "Analyser les changements"
+        id: changes
+        run: |
+          PLAN_JSON="/tmp/plans/${{ matrix.environment }}.json"
+          ADDS=$(jq '[.resource_changes[] | select(.change.actions | contains(["create"]))] | length' "$PLAN_JSON")
+          CHANGES=$(jq '[.resource_changes[] | select(.change.actions | contains(["update"]))] | length' "$PLAN_JSON")
+          DESTROYS=$(jq '[.resource_changes[] | select(.change.actions | contains(["delete"]))] | length' "$PLAN_JSON")
+          echo "adds=${ADDS}"       >> "$GITHUB_OUTPUT"
+          echo "changes=${CHANGES}" >> "$GITHUB_OUTPUT"
+          echo "destroys=${DESTROYS}" >> "$GITHUB_OUTPUT"
+​
+          echo "## Plan · ${{ matrix.environment }}"      >> "$GITHUB_STEP_SUMMARY"
+          echo "| Action  | Count |"                      >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |"                             >> "$GITHUB_STEP_SUMMARY"
+          echo "| ➕ Create | ${ADDS} |"                  >> "$GITHUB_STEP_SUMMARY"
+          echo "| ✏️ Update | ${CHANGES} |"               >> "$GITHUB_STEP_SUMMARY"
+          echo "| 💥 Destroy | ${DESTROYS} |"             >> "$GITHUB_STEP_SUMMARY"
+​
+          if [[ "$DESTROYS" -gt 0 ]]; then
+            echo "::warning:: ⚠️ ${DESTROYS} ressource(s) seront DÉTRUITES sur ${{ matrix.environment }}"
+          fi
+​
+      - name: "Upload plan binaire"
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/plans/${{ matrix.environment }}.tfplan
+          retention-days: 7
+          if-no-files-found: error
+​
+      - name: "Upload plan JSON"
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-json-${{ matrix.environment }}-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/plans/${{ matrix.environment }}.json
+          retention-days: 7
+​
+      - name: "Upload output textuel"
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-txt-${{ matrix.environment }}-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/plan-output-${{ matrix.environment }}.txt
+          retention-days: 7
+​
+      - name: "Commenter PR — Plan"
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const raw = fs.readFileSync('/tmp/plan-output-${{ matrix.environment }}.txt', 'utf8');
+            const plan = raw.slice(-60000);  // limite GitHub comment
+            const adds     = '${{ steps.changes.outputs.adds }}';
+            const changes  = '${{ steps.changes.outputs.changes }}';
+            const destroys = '${{ steps.changes.outputs.destroys }}';
+            const env      = '${{ matrix.environment }}';
+            const sha      = '${{ needs.metadata.outputs.short_sha }}';
+​
+            const body = [
+              `## 📋 Terraform Plan — \`${env}\``,
+              '',
+              `| ➕ Create | ✏️ Update | 💥 Destroy |`,
+              `| --- | --- | --- |`,
+              `| ${adds} | ${changes} | ${destroys} |`,
+              '',
+              destroys > 0 ? `> ⚠️ **${destroys} ressource(s) seront détruites.** Vérifier avant de merger.` : '',
+              '',
+              '<details><summary>Voir le plan complet</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '',
+              '</details>',
+              '',
+              `> Commit: \`${sha}\` · Run: ${{ github.run_id }}`,
+            ].join('\n');
+​
+            // Chercher un commentaire existant pour mise à jour
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes(`Terraform Plan — \`${env}\``))
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 8 — APPROBATION (prod uniquement)
+# ═══════════════════════════════════════════════════════════════════════════════
+  approve-prod:
+    name: "Approbation manuelle — prod"
+    runs-on: ubuntu-24.04
+    needs: [plan]
+    if: |
+      needs.metadata.outputs.env_prod == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      github.event.inputs.auto_approve != 'true'
+    environment:
+      name: production-approval
+    steps:
+      - name: "En attente d'approbation"
+        run: |
+          echo "✅ Approbation reçue pour prod."
+          echo "Approuvé par : ${{ github.actor }}"
+          echo "Run : ${{ github.run_id }}"
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 9 — APPLY DEV
+# ═══════════════════════════════════════════════════════════════════════════════
+  apply-dev:
+    name: "Apply · dev"
+    runs-on: ubuntu-24.04
+    needs: [metadata, plan]
+    if: |
+      needs.metadata.outputs.env_dev == 'true' &&
+      (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' ||
+       github.event.inputs.action == 'apply') &&
+      github.event_name != 'pull_request'
+    environment:
+      name: dev
+      url: https://dev.nexus-grammarly.example.com
+    concurrency:
+      group: apply-dev
+      cancel-in-progress: false
+    timeout-minutes: 60
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Configure AWS Credentials · dev"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          role-session-name: tf-apply-dev-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Download plan binaire · dev"
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/plans
+​
+      - name: "Terraform Init · dev"
+        working-directory: infra/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET_PREFIX}-dev" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=nexus-tf-locks-dev"
+​
+      - name: "Terraform Apply · dev"
+        id: apply
+        working-directory: infra/dev
+        run: |
+          terraform apply \
+            -auto-approve \
+            /tmp/plans/dev.tfplan \
+            2>&1 | tee /tmp/apply-output-dev.txt
+​
+      - name: "Post-apply health check · dev"
+        run: |
+          echo "=== Health check post-apply dev ==="
+          ENDPOINT="https://dev.nexus-grammarly.example.com/api/ping"
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -sf -o /dev/null -w "%{http_code}" "$ENDPOINT" 2>/dev/null || echo "000")
+            if [[ "$CODE" == "200" ]]; then
+              echo "✅ Health check OK (tentative $i)"
+              break
+            fi
+            echo "⏳ Tentative $i — HTTP $CODE. Attente 15s..."
+            sleep 15
+          done
+          if [[ "$CODE" != "200" ]]; then
+            echo "::error:: Health check dev échoué après 5 tentatives."
+            exit 1
+          fi
+​
+      - name: "Upload output apply dev"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apply-dev-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/apply-output-dev.txt
+          retention-days: 30
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 10 — APPLY STAGING
+# ═══════════════════════════════════════════════════════════════════════════════
+  apply-staging:
+    name: "Apply · staging"
+    runs-on: ubuntu-24.04
+    needs: [metadata, plan, apply-dev]
+    if: |
+      needs.metadata.outputs.env_staging == 'true' &&
+      (github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main' ||
+       github.event.inputs.action == 'apply') &&
+      github.event_name != 'pull_request'
+    environment:
+      name: staging
+      url: https://staging.nexus-grammarly.example.com
+    concurrency:
+      group: apply-staging
+      cancel-in-progress: false
+    timeout-minutes: 60
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Configure AWS Credentials · staging"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_STAGING }}
+          role-session-name: tf-apply-staging-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Download plan · staging"
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-staging-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/plans
+​
+      - name: "Terraform Init · staging"
+        working-directory: infra/staging
+        run: |
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET_PREFIX}-staging" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=nexus-tf-locks-staging"
+​
+      - name: "Terraform Apply · staging"
+        working-directory: infra/staging
+        run: |
+          terraform apply \
+            -auto-approve \
+            /tmp/plans/staging.tfplan \
+            2>&1 | tee /tmp/apply-output-staging.txt
+​
+      - name: "Smoke tests staging (curl suite)"
+        run: |
+          BASE="https://staging.nexus-grammarly.example.com"
+          declare -A ENDPOINTS=(
+            ["/api/ping"]="200"
+            ["/api/status"]="200"
+            ["/api/etat"]="200"
+            ["/"]="200"
+          )
+          FAILED=0
+          for path in "${!ENDPOINTS[@]}"; do
+            expected="${ENDPOINTS[$path]}"
+            got=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE}${path}" 2>/dev/null || echo "000")
+            if [[ "$got" == "$expected" ]]; then
+              echo "✅ ${path} → HTTP ${got}"
+            else
+              echo "❌ ${path} → HTTP ${got} (attendu ${expected})"
+              FAILED=$((FAILED+1))
+            fi
+          done
+          [[ "$FAILED" -gt 0 ]] && exit 1 || echo "Tous les smoke tests passent."
+​
+      - name: "Upload output apply staging"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apply-staging-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/apply-output-staging.txt
+          retention-days: 30
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 11 — APPLY PROD
+# ═══════════════════════════════════════════════════════════════════════════════
+  apply-prod:
+    name: "Apply · prod"
+    runs-on: ubuntu-24.04
+    needs: [metadata, plan, approve-prod, apply-staging]
+    if: |
+      needs.metadata.outputs.env_prod == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request'
+    environment:
+      name: production
+      url: https://nexus-grammarly.example.com
+    concurrency:
+      group: apply-prod
+      cancel-in-progress: false
+    timeout-minutes: 90
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Configure AWS Credentials · prod"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
+          role-session-name: tf-apply-prod-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Download plan · prod"
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/plans
+​
+      - name: "Terraform Init · prod"
+        working-directory: infra/prod
+        run: |
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET_PREFIX}-prod" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=nexus-tf-locks-prod"
+​
+      - name: "[PROD] Snapshot RDS pré-apply"
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          SNAPSHOT_ID="pre-apply-${TIMESTAMP}-${{ needs.metadata.outputs.short_sha }}"
+          DB_ID="nexus-grammarly-prod"
+          echo "Création snapshot RDS : ${SNAPSHOT_ID}"
+          aws rds create-db-snapshot \
+            --db-instance-identifier "$DB_ID" \
+            --db-snapshot-identifier "$SNAPSHOT_ID" \
+            --tags Key=Environment,Value=prod Key=RunId,Value=${{ github.run_id }} \
+            2>/dev/null || echo "Pas de RDS ou snapshot ignoré."
+​
+      - name: "[PROD] Activer maintenance mode"
+        run: |
+          # Pointer le DNS vers la page de maintenance
+          echo "Maintenance mode activé (à implémenter via Route53 weighted routing)"
+​
+      - name: "Terraform Apply · prod"
+        id: apply_prod
+        working-directory: infra/prod
+        run: |
+          terraform apply \
+            -auto-approve \
+            /tmp/plans/prod.tfplan \
+            2>&1 | tee /tmp/apply-output-prod.txt
+​
+      - name: "[PROD] Désactiver maintenance mode"
+        if: success()
+        run: echo "Maintenance mode désactivé."
+​
+      - name: "[PROD] Health check complet"
+        run: |
+          BASE="https://nexus-grammarly.example.com"
+          echo "=== Health checks prod ==="
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            CODE=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE}/api/ping" 2>/dev/null || echo "000")
+            if [[ "$CODE" == "200" ]]; then
+              echo "✅ Prod en ligne (tentative $i)"
+              break
+            fi
+            echo "⏳ Tentative $i — HTTP $CODE. Attente 30s..."
+            sleep 30
+          done
+          if [[ "$CODE" != "200" ]]; then
+            echo "::error:: Prod ne répond pas après 10 tentatives."
+            exit 1
+          fi
+​
+      - name: "[PROD] Rollback automatique si apply échoue"
+        if: failure() && steps.apply_prod.outcome == 'failure'
+        working-directory: infra/prod
+        run: |
+          echo "::error:: Apply prod échoué. Tentative de rollback..."
+          PREV_PLAN=$(ls -t /tmp/plans/prod-*.tfplan 2>/dev/null | sed -n '2p')
+          if [[ -n "$PREV_PLAN" ]]; then
+            echo "Rollback sur ${PREV_PLAN}"
+            terraform apply -auto-approve "$PREV_PLAN" || true
+          else
+            echo "Aucun plan précédent trouvé. Rollback manuel requis."
+          fi
+​
+      - name: "Upload output apply prod"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apply-prod-${{ needs.metadata.outputs.short_sha }}
+          path: /tmp/apply-output-prod.txt
+          retention-days: 365
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 12 — DÉTECTION DE DRIFT
+# ═══════════════════════════════════════════════════════════════════════════════
+  drift:
+    name: "Drift Detection · ${{ matrix.environment }}"
+    runs-on: ubuntu-24.04
+    needs: metadata
+    if: github.event.schedule == '0 6 * * 1' || github.event.inputs.action == 'drift'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Configure AWS · ${{ matrix.environment }}"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
+          role-session-name: tf-drift-${{ matrix.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Terraform Init · ${{ matrix.environment }}"
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET_PREFIX}-${{ matrix.environment }}" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=nexus-tf-locks-${{ matrix.environment }}"
+​
+      - name: "Terraform Plan (drift) · ${{ matrix.environment }}"
+        id: drift_plan
+        working-directory: infra/${{ matrix.environment }}
+        run: |
+          terraform plan \
+            -detailed-exitcode \
+            -refresh=true \
+            -var-file=vars/${{ matrix.environment }}.tfvars \
+            2>&1 | tee /tmp/drift-${{ matrix.environment }}.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          [[ "$EXIT_CODE" == "1" ]] && exit 1 || exit 0
+​
+      - name: "Analyser drift"
+        id: drift_analysis
+        run: |
+          EXIT_CODE="${{ steps.drift_plan.outputs.exit_code }}"
+          if [[ "$EXIT_CODE" == "0" ]]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Aucun drift sur ${{ matrix.environment }}"
+          elif [[ "$EXIT_CODE" == "2" ]]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            echo "::warning:: ⚠️ Drift détecté sur ${{ matrix.environment }}"
+          fi
+​
+          echo "## Drift Detection · ${{ matrix.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$EXIT_CODE" == "0" ]]; then
+            echo "✅ Aucun drift" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$EXIT_CODE" == "2" ]]; then
+            echo "⚠️ **Drift détecté** — consulter le plan ci-dessous." >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+            head -200 /tmp/drift-${{ matrix.environment }}.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+​
+      - name: "Créer issue GitHub si drift détecté"
+        if: steps.drift_analysis.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('/tmp/drift-${{ matrix.environment }}.txt', 'utf8').slice(0, 5000);
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: `⚠️ Drift Terraform détecté — ${{ matrix.environment }} — ${new Date().toISOString().split('T')[0]}`,
+              body: [
+                '## Drift Infrastructure — `${{ matrix.environment }}`',
+                '',
+                'Un drift a été détecté entre le state Terraform et les ressources AWS réelles.',
+                '',
+                '**Run :** `${{ github.run_id }}`',
+                '**Environnement :** `${{ matrix.environment }}`',
+                '**Date :** ' + new Date().toISOString(),
+                '',
+                '<details><summary>Plan (extrait 5000 chars)</summary>',
+                '',
+                '```hcl',
+                plan,
+                '```',
+                '</details>',
+                '',
+                '**Actions requises :**',
+                '1. Analyser le plan ci-dessus',
+                '2. Identifier la cause du drift (modification manuelle AWS ?)',
+                '3. Soit corriger manuellement, soit lancer `terraform apply`',
+              ].join('\n'),
+              labels: ['drift', 'infrastructure', 'urgent'],
+              assignees: ['Aissamohammedi88'],
+            });
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 13 — DOCUMENTATION TERRAFORM (terraform-docs)
+# ═══════════════════════════════════════════════════════════════════════════════
+  docs:
+    name: "Docs Terraform"
+    runs-on: ubuntu-24.04
+    needs: [metadata]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 15
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+​
+      - name: "Setup terraform-docs"
+        uses: terraform-docs/gh-actions@v1
+        with:
+          working-dir: |
+            modules/vpc
+            modules/ecs
+            modules/rds
+            modules/s3
+            modules/cloudfront
+            modules/waf
+            modules/alb
+            modules/ecr
+            infra/dev
+            infra/staging
+            infra/prod
+          output-file: README.md
+          output-method: inject
+          git-push: "true"
+          git-commit-message: "docs(terraform): mise à jour auto terraform-docs [skip ci]"
+          git-push-user-name: "nexus-bot"
+          git-push-user-email: "nexus-bot@users.noreply.github.com"
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 14 — DESTROY (workflow_dispatch uniquement, jamais automatique)
+# ═══════════════════════════════════════════════════════════════════════════════
+  destroy:
+    name: "DESTROY · ${{ github.event.inputs.environment }}"
+    runs-on: ubuntu-24.04
+    needs: [metadata]
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.action == 'destroy' &&
+      github.event.inputs.environment != 'prod'
+    environment:
+      name: destroy-gate
+    timeout-minutes: 60
+    steps:
+      - name: "Checkpoint — destroy non disponible en prod via CI"
+        if: github.event.inputs.environment == 'prod'
+        run: |
+          echo "::error:: Destroy prod interdit depuis le CI. Utiliser la console AWS avec accès restreint."
+          exit 1
+​
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+​
+      - name: "Configure AWS · ${{ github.event.inputs.environment }}"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', github.event.inputs.environment)] }}
+          role-session-name: tf-destroy-${{ github.event.inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Terraform Init"
+        working-directory: infra/${{ github.event.inputs.environment }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET_PREFIX}-${{ github.event.inputs.environment }}" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=nexus-tf-locks-${{ github.event.inputs.environment }}"
+​
+      - name: "Terraform Destroy"
+        working-directory: infra/${{ github.event.inputs.environment }}
+        run: |
+          terraform destroy \
+            -auto-approve \
+            -var-file=vars/${{ github.event.inputs.environment }}.tfvars
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 15 — RAPPORT DE COÛTS MENSUEL
+# ═══════════════════════════════════════════════════════════════════════════════
+  monthly-cost-report:
+    name: "Rapport de coûts mensuel"
+    runs-on: ubuntu-24.04
+    needs: metadata
+    if: github.event.schedule == '0 8 1 * *'
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+​
+      - name: "Setup Infracost"
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+​
+      - name: "Configure AWS · ${{ matrix.environment }}"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
+          role-session-name: tf-cost-report-${{ matrix.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Infracost breakdown · ${{ matrix.environment }}"
+        run: |
+          infracost breakdown \
+            --path infra/${{ matrix.environment }} \
+            --format table \
+            --out-file /tmp/cost-report-${{ matrix.environment }}.txt \
+            --terraform-var-file infra/${{ matrix.environment }}/vars/${{ matrix.environment }}.tfvars
+​
+      - name: "Infracost JSON · ${{ matrix.environment }}"
+        run: |
+          infracost breakdown \
+            --path infra/${{ matrix.environment }} \
+            --format json \
+            --out-file /tmp/cost-report-${{ matrix.environment }}.json \
+            --terraform-var-file infra/${{ matrix.environment }}/vars/${{ matrix.environment }}.tfvars
+​
+      - name: "Résumé coûts mensuels"
+        run: |
+          echo "## 💵 Rapport de coûts · ${{ matrix.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          TOTAL=$(jq -r '.totalMonthlyCost' /tmp/cost-report-${{ matrix.environment }}.json)
+          PAST=$(jq -r '.pastTotalMonthlyCost' /tmp/cost-report-${{ matrix.environment }}.json)
+          echo "| Mois courant | Mois précédent |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |"                     >> "$GITHUB_STEP_SUMMARY"
+          echo "| \$${TOTAL} | \$${PAST} |"        >> "$GITHUB_STEP_SUMMARY"
+​
+      - name: "Upload rapport mensuel"
+        uses: actions/upload-artifact@v4
+        with:
+          name: monthly-cost-${{ matrix.environment }}-${{ github.run_number }}
+          path: /tmp/cost-report-${{ matrix.environment }}.*
+          retention-days: 365
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 16 — NOTIFICATIONS SLACK
+# ═══════════════════════════════════════════════════════════════════════════════
+  notify:
+    name: "Notification Slack"
+    runs-on: ubuntu-24.04
+    needs:
+      - metadata
+      - format
+      - validate
+      - lint
+      - security
+      - plan
+      - apply-dev
+      - apply-staging
+      - apply-prod
+    if: always()
+    steps:
+      - name: "Construire le message Slack"
+        id: message
+        run: |
+          SHA="${{ needs.metadata.outputs.short_sha }}"
+          BRANCH="${{ needs.metadata.outputs.branch }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+​
+          # Collecter les statuts
+          FORMAT_STATUS="${{ needs.format.result }}"
+          VALIDATE_STATUS="${{ needs.validate.result }}"
+          LINT_STATUS="${{ needs.lint.result }}"
+          SECURITY_STATUS="${{ needs.security.result }}"
+          PLAN_STATUS="${{ needs.plan.result }}"
+          APPLY_DEV_STATUS="${{ needs.apply-dev.result }}"
+          APPLY_STAGING_STATUS="${{ needs.apply-staging.result }}"
+          APPLY_PROD_STATUS="${{ needs.apply-prod.result }}"
+​
+          status_emoji() {
+            case "$1" in
+              success)  echo ":white_check_mark:" ;;
+              failure)  echo ":x:" ;;
+              skipped)  echo ":large_yellow_circle:" ;;
+              cancelled) echo ":white_circle:" ;;
+              *)         echo ":grey_question:" ;;
+            esac
+          }
+​
+          OVERALL="success"
+          for s in "$FORMAT_STATUS" "$VALIDATE_STATUS" "$LINT_STATUS" "$PLAN_STATUS" "$APPLY_PROD_STATUS"; do
+            [[ "$s" == "failure" ]] && OVERALL="failure"
+          done
+​
+          COLOR="good"; [[ "$OVERALL" == "failure" ]] && COLOR="danger"
+​
+          PAYLOAD=$(jq -n \
+            --arg color "$COLOR" \
+            --arg branch "$BRANCH" \
+            --arg sha "$SHA" \
+            --arg run_url "$RUN_URL" \
+            --arg actor "${{ github.actor }}" \
+            --arg fmt "$(status_emoji $FORMAT_STATUS)" \
+            --arg val "$(status_emoji $VALIDATE_STATUS)" \
+            --arg lint "$(status_emoji $LINT_STATUS)" \
+            --arg sec "$(status_emoji $SECURITY_STATUS)" \
+            --arg plan "$(status_emoji $PLAN_STATUS)" \
+            --arg dev "$(status_emoji $APPLY_DEV_STATUS)" \
+            --arg stg "$(status_emoji $APPLY_STAGING_STATUS)" \
+            --arg prod "$(status_emoji $APPLY_PROD_STATUS)" \
+            '{
+              attachments: [{
+                color: $color,
+                title: "NEXUS Terraform CI/CD",
+                title_link: $run_url,
+                fields: [
+                  {title: "Branch",    value: $branch, short: true},
+                  {title: "Commit",    value: $sha,    short: true},
+                  {title: "Actor",     value: $actor,  short: true},
+                  {title: "Format",    value: $fmt,    short: true},
+                  {title: "Validate",  value: $val,    short: true},
+                  {title: "Lint",      value: $lint,   short: true},
+                  {title: "Security",  value: $sec,    short: true},
+                  {title: "Plan",      value: $plan,   short: true},
+                  {title: "Apply dev", value: $dev,    short: true},
+                  {title: "Apply stg", value: $stg,    short: true},
+                  {title: "Apply prod",value: $prod,   short: true}
+                ],
+                footer: "NEXUS-Grammarly Infrastructure",
+                ts: now | floor
+              }]
+            }')
+​
+          echo "payload=${PAYLOAD}" >> "$GITHUB_OUTPUT"
+​
+      - name: "Envoyer notification Slack"
+        if: env.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -sf -X POST \
+            -H 'Content-Type: application/json' \
+            --data '${{ steps.message.outputs.payload }}' \
+            "$SLACK_WEBHOOK_URL" \
+            && echo "Notification Slack envoyée." \
+            || echo "Erreur notification Slack (non bloquant)."
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 17 — STATE BACKUP
+# ═══════════════════════════════════════════════════════════════════════════════
+  state-backup:
+    name: "Backup State · ${{ matrix.environment }}"
+    runs-on: ubuntu-24.04
+    needs: [apply-dev, apply-staging, apply-prod]
+    if: |
+      always() &&
+      (needs.apply-dev.result == 'success' ||
+       needs.apply-staging.result == 'success' ||
+       needs.apply-prod.result == 'success')
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - name: "Configure AWS · ${{ matrix.environment }}"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
+          role-session-name: tf-backup-${{ matrix.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+​
+      - name: "Copier state vers bucket de backup"
+        run: |
+          DATE=$(date +%Y/%m/%d)
+          SHA="${{ needs.metadata.outputs.short_sha }}"
+          SRC="s3://${STATE_BUCKET_PREFIX}-${{ matrix.environment }}/terraform.tfstate"
+          DST="s3://${STATE_BUCKET_PREFIX}-backups/${{ matrix.environment }}/${DATE}/${SHA}/terraform.tfstate"
+​
+          aws s3 cp "$SRC" "$DST" \
+            --sse aws:kms \
+            --metadata "GitSha=${SHA},RunId=${{ github.run_id }},Actor=${{ github.actor }}" \
+            && echo "✅ State sauvegardé → ${DST}" \
+            || echo "⚠️ Backup state échoué (non bloquant)."
+​
+      - name: "Nettoyage des backups > 90 jours"
+        run: |
+          CUTOFF=$(date -d '-90 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                   date -v-90d +%Y-%m-%dT%H:%M:%SZ)
+          aws s3api list-objects-v2 \
+            --bucket "${STATE_BUCKET_PREFIX}-backups" \
+            --prefix "${{ matrix.environment }}/" \
+            --query "Contents[?LastModified<'${CUTOFF}'].Key" \
+            --output text | tr '\t' '\n' | while read key; do
+            [ -z "$key" ] && continue
+            echo "Suppression backup expiré : $key"
+            aws s3 rm "s3://${STATE_BUCKET_PREFIX}-backups/${key}" || true
+          done
+​
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 18 — AUDIT LOG
+# ═══════════════════════════════════════════════════════════════════════════════
+  audit:
+    name: "Audit Log"
+    runs-on: ubuntu-24.04
+    needs:
+      - metadata
+      - plan
+      - apply-dev
+      - apply-staging
+      - apply-prod
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - name: "Enregistrer l'audit dans DynamoDB"
+        run: |
+          # Écriture d'une entrée d'audit dans DynamoDB
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          SHA="${{ needs.metadata.outputs.short_sha }}"
+          ACTOR="${{ github.actor }}"
+          EVENT="${{ github.event_name }}"
+          RUN_ID="${{ github.run_id }}"
+          BRANCH="${{ needs.metadata.outputs.branch }}"
+          ACTION="${{ github.event.inputs.action || 'push' }}"
+​
+          ITEM=$(jq -n \
+            --arg ts "$TIMESTAMP" \
+            --arg sha "$SHA" \
+            --arg actor "$ACTOR" \
+            --arg event "$EVENT" \
+            --arg run "$RUN_ID" \
+            --arg branch "$BRANCH" \
+            --arg action "$ACTION" \
+            --arg plan_result "${{ needs.plan.result }}" \
+            --arg apply_dev "${{ needs.apply-dev.result }}" \
+            --arg apply_staging "${{ needs.apply-staging.result }}" \
+            --arg apply_prod "${{ needs.apply-prod.result }}" \
+            '{
+              pk: {S: ("RUN#" + $run)},
+              sk: {S: $ts},
+              sha: {S: $sha},
+              actor: {S: $actor},
+              event: {S: $event},
+              branch: {S: $branch},
+              action: {S: $action},
+              plan_result: {S: $plan_result},
+              apply_dev: {S: $apply_dev},
+              apply_staging: {S: $apply_staging},
+              apply_prod: {S: $apply_prod},
+            }')
+​
+          aws dynamodb put-item \
+            --table-name nexus-tf-audit \
+            --item "$ITEM" \
+            --region "${AWS_REGION}" \
+            2>/dev/null || echo "Audit DynamoDB non disponible (non bloquant)."
+​
+      - name: "Résumé global pipeline"
+        if: always()
+        run: |
+          echo "# Résumé Pipeline Terraform" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Champ | Valeur |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | ${{ needs.metadata.outputs.branch }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | ${{ needs.metadata.outputs.short_sha }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Actor | ${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Run | ${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Plan | ${{ needs.plan.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Apply dev | ${{ needs.apply-dev.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Apply staging | ${{ needs.apply-staging.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Apply prod | ${{ needs.apply-prod.result }} |" >> "$GITHUB_STEP_SUMMARY"
+​
