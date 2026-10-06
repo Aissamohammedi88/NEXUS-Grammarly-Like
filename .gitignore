@@ -1,31 +1,224 @@
-# Built things
-_Debug/
-Compiled/
+# Build and Release Folders
+bin-debug/
+bin-release/
+[Oo]bj/
+[Bb]in/
 
-# AudioCache can be rebuilt from sources
-AudioCache/
+# Other files and folders
+.settings/
 
-# Lockfile
-_OpenInEditor.lock
+# Executables
+*.swf
+*.air
+*.ipa
+*.apk
 
-# User settings
-Game.agf.user
-*.crm.user
+# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
+# should NOT be excluded as they contain compiler settings and other important
+# information for Eclipse / Flash Builder.
+nexus-grammarly-like/
+│
+├── README.md                        ← CE fichier
+├── LICENSE                          ← NEXUS-OPEN-2.0
+├── .gitignore
+│
+├── nexus_grammarly_live.py          ← SOURCE UNIQUE (monofichier intentionnel)
+│   │
+│   ├── [CONFIG]      L.1–60         constantes, chemins, HOST/PORT, SSL ctx
+│   ├── [STATE]       L.61–90        ETAT dict + ETAT_LOCK (état vivant partagé)
+│   ├── [CFG]         L.91–130       charger_config() / sauver_config() / DEFAUT
+│   ├── [LOG]         L.131–185      log() terminal coloré + log_correction()
+│   ├── [HTTP]        L.186–230      http_post() client urllib (gzip, timeout)
+│   ├── [LT]          L.231–330      lt_ping() + corriger_languagetool()
+│   ├── [PING]        L.331–350      boucle_ping() thread de fond
+│   ├── [HISTORY]     L.351–365      historique_add() → history.jsonl
+│   ├── [HTML]        L.366–620      frontend embarqué (SPA correction temps réel)
+│   ├── [HANDLER]     L.621–760      Handler(BaseHTTPRequestHandler)
+│   ├── [SERVER]      L.761–775      Server(ThreadingMixIn, HTTPServer)
+│   └── [MAIN]        L.776–840      port_libre() / trouver_port() / main()
+│
+├── config.example.json              ← template config utilisateur
+│
+├── docs/
+│   ├── ARCHITECTURE.md              ← ce fichier en version longue
+│   ├── API.md                       ← routes REST documentées
+│   └── preview.png                  ← screenshot og:image (SEO)
+│
+└── .github/
+    └── workflows/
+        └── ci.yml                   ← lint + test syntaxe Python
 
-# Backups
-Game.agf.bak
-backup_acsprset.spr
+Pourquoi un monofichier
 
-# Memory dumps
-*.dmp
+Le choix du monofichier (nexus_grammarly_live.py) est délibéré :
 
-# Temporary files
-# temporarily created during sprite or room background compression
-~aclzw.tmp
-# temporary, main game data, before getting packed into exe
-game28.dta
-# temporary build of the game before being moved to Compiled/ folder
-*.exe
+    a-Shell iOS n'a pas de gestionnaire de paquets. Un seul fichier = python3 nexus_grammarly_live.py, point.
+    Zéro setup pour les utilisateurs non-tech. Pas de virtualenv, pas de pip install.
+    Embarquement du HTML dans la string HTML : le serveur sert le frontend sans lire de fichier disque → portable sur tout FS read-only.
 
-# Log files
-warnings.log
+Si tu veux splitter pour un usage serveur classique, voir Architecture.
+Installation
+
+Pré-requis : Python 3.7+. C'est tout.
+
+# Clone
+git clone https://github.com/DGK-Aissa/nexus-grammarly-like.git
+cd nexus-grammarly-like
+
+# Lancer
+python3 nexus_grammarly_live.py
+
+══════════════════════════════════════════════════════════════════════════════
+  NEXUS GRAMMARLY-LIKE v4.0.0
+  Auteur : Aissa Mohammedi (DGK)  |  Licence : NEXUS-OPEN-2.0
+══════════════════════════════════════════════════════════════════════════════
+
+  Local  : http://localhost:8914/
+  Ou     : http://127.0.0.1:8914/
+
+  Ouvre la page, tape du texte, les erreurs défilent ici.
+  Ctrl+C pour arrêter
+
+Sur a-Shell (iOS)
+
+# Dans a-Shell
+pip install   # ← pas nécessaire
+curl -O https://raw.githubusercontent.com/DGK-Aissa/nexus-grammarly-like/main/nexus_grammarly_live.py
+python3 nexus_grammarly_live.py
+# Ouvre Safari → http://localhost:8914
+
+Avec LanguageTool local (offline, recommandé)
+
+# Télécharger LanguageTool Server
+curl -L https://languagetool.org/download/LanguageTool-stable.zip -o lt.zip
+unzip lt.zip
+
+# Lancer LT en local
+java -cp languagetool-server.jar \
+  org.languagetool.server.HTTPServer --port 8081 --allow-origin '*' &
+
+# Pointer NEXUS dessus
+export LT_URL="http://localhost:8081/v2/check"
+python3 nexus_grammarly_live.py
+
+Ou modifier config.json :
+
+{
+  "languagetool_url": "http://localhost:8081/v2/check",
+  "langue_defaut": "fr",
+  "debounce_ms": 600,
+  "min_chars": 4,
+  "afficher_terminal": true
+}
+
+Architecture
+Vue d'ensemble
+
+  Navigateur (SPA embarquée)
+       │
+       │  POST /api/corriger  {texte, langue}
+       │  GET  /api/etat
+       │  GET  /api/status
+       ▼
+  ┌─────────────────────────────────────────┐
+  │  Server (ThreadingMixIn + HTTPServer)   │
+  │  HOST 127.0.0.1 : PORT 8914 (auto)     │
+  │                                         │
+  │  Handler(BaseHTTPRequestHandler)        │
+  │  ├── do_GET  → routes lecture           │
+  │  ├── do_POST → /api/corriger            │
+  │  └── do_OPTIONS → CORS preflight        │
+  └────────────────┬────────────────────────┘
+                   │
+                   ▼
+  ┌─────────────────────────────────────────┐
+  │  corriger_languagetool(texte, langue)   │
+  │                                         │
+  │  1. urlencode payload                   │
+  │  2. http_post() → api.languagetool.org  │
+  │  3. parse matches[]                     │
+  │  4. reconstruire texte_corrigé          │
+  │  5. màj ETAT (thread-safe)              │
+  └────────────────┬────────────────────────┘
+                   │
+         ┌─────────┴──────────┐
+         ▼                    ▼
+  historique_add()      log_correction()
+  → history.jsonl       → terminal coloré
+                         → grammarly.log
+
+  [Thread de fond]
+  boucle_ping() — toutes les 30s
+  → lt_ping() → màj ETAT["lt_ok", "lt_ms"]
+  → affiché dans la barre de statut web
+
+Segments détaillés
+[CONFIG] — Constantes globales
+
+VERSION  = "4.0.0"
+HOST     = "127.0.0.1"
+PORT     = 8914           # auto-incrémenté si occupé
+BASE     = ~/Documents/nexus_grammarly_live/
+  ├── logs/grammarly.log
+  ├── results/history.jsonl
+  └── config.json
+
+Décision design : os.path exclusivement (pas pathlib) → compatibilité a-Shell iOS garantie.
+[STATE] — État vivant thread-safe
+
+ETAT = {
+    "lt_ok"             : bool     # LanguageTool joignable ?
+    "lt_ms"             : int      # latence dernier ping (ms)
+    "derniere_correction": float   # epoch UNIX
+    "dernier_nb"        : int      # nb erreurs dernière correction
+    "corrections_total" : int      # compteur session
+    "erreurs_total"     : int      # erreurs réseau session
+    "dernier_texte"     : str      # 200 premiers chars
+}
+
+Partagé entre le thread HTTP, le thread de ping, et le handler via ETAT_LOCK = threading.RLock().
+Lu par GET /api/etat → affiché en temps réel dans la barre de statut web (polling 3s).
+[CFG] — Configuration persistante
+Clé 	Défaut 	Description
+languagetool_url 	https://api.languagetool.org/v2/check 	Endpoint LT (local ou cloud)
+langue_defaut 	fr 	Code langue ISO 639
+debounce_ms 	900 	Délai après la dernière frappe avant envoi
+min_chars 	4 	Seuil minimum pour déclencher l'analyse
+afficher_terminal 	true 	Log des corrections dans le terminal
+
+Modifiable via POST /api/config/save ou directement dans config.json.
+[LOG] — Terminal coloré
+
+[10:42:17] 3 correction(s) sur 142 caractere(s)
+  #1 taper  GRAMMATICAL_ERROR  -> tape | tapé | tapes
+  #2 un     AGREEMENT_ERROR    -> une
+  #3 texte  TYPO               -> textes
+
+Les couleurs sont désactivées automatiquement si :
+
+    NO_COLOR est défini dans l'environnement
+    stdout n'est pas un TTY (pipe, redirection)
+
+[HTTP] — Client urllib
+
+http_post() gère :
+
+    Décompression gzip automatique
+    Timeout configurable (défaut 20s)
+    User-Agent identifiable : NexusGrammarlyLive/4.0 (a-Shell)
+    Retour structuré : {ok, status, body, ms, err}
+    Pas de requests → stdlib pure.
+
+[LT] — Intégration LanguageTool
+
+corriger_languagetool(texte, langue) :
+
+    Encode le payload en application/x-www-form-urlencoded
+    Appelle l'API LT (cloud ou local)
+    Parse matches[] → construit la liste corrections[]
+    Reconstruit texte_corrigé en appliquant les remplacements de droite à gauche (offset preservation)
+    Met à jour ETAT de manière thread-safe
+
+Chaque correction expose :
+
+{
